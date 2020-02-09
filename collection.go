@@ -154,7 +154,14 @@ func (coll *Collection) EnableKprobe(secName string, maxactive int) error {
 			secName,
 		)
 	}
-	return prog.EnableKprobe(maxactive)
+	if prog.IsKProbe() || prog.IsKRetProbe() {
+		return prog.EnableKprobe(maxactive)
+	}
+	return errors.Wrapf(
+		errors.New("not a kprobe"),
+		"couldn't enable program %s",
+		secName,
+	)
 }
 
 // EnableTracepoints enables all tracepoints included in the collection.
@@ -180,7 +187,14 @@ func (coll *Collection) EnableTracepoint(secName string) error {
 			secName,
 		)
 	}
-	return prog.EnableTracepoint()
+	if prog.ProgramSpec.Type == TracePoint {
+		return prog.EnableTracepoint()
+	}
+	return errors.Wrapf(
+		errors.New("not a tracepoint"),
+		"couldn't enable program %s",
+		secName,
+	)
 }
 
 // Close frees all maps and programs associated with the collection.

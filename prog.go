@@ -237,6 +237,13 @@ func (bpf *Program) EnableKprobe(maxactive int) error {
 
 // EnableTracepoint enables the program if it is a tracepoint.
 func (bpf *Program) EnableTracepoint() error {
+	if bpf.ProgramSpec.Type != TracePoint {
+		return errors.Wrapf(
+			errors.New("not a tracepoint"),
+			"couldn't enable program %s",
+			bpf.ProgramSpec.SectionName,
+		)
+	}
 	tracepointGroup := strings.SplitN(bpf.ProgramSpec.SectionName, "/", 3)
 	if len(tracepointGroup) != 3 {
 		return errors.Wrapf(

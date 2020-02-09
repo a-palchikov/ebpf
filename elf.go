@@ -17,6 +17,10 @@ type elfCode struct {
 	symtab *symtab
 }
 
+const (
+	useCurrentKernelVersion = 0xFFFFFFFE
+)
+
 // LoadCollectionSpecFromReader parses an io.ReaderAt that represents an ELF layout
 // into a CollectionSpec.
 func LoadCollectionSpecFromReader(code io.ReaderAt) (*CollectionSpec, error) {
@@ -69,6 +73,12 @@ func LoadCollectionSpecFromReader(code io.ReaderAt) (*CollectionSpec, error) {
 	version, err := loadVersion(versionSection, ec.ByteOrder)
 	if err != nil {
 		return nil, errors.Wrap(err, "load version")
+	}
+	if version == useCurrentKernelVersion {
+		version, err = CurrentKernelVersion()
+		if err != nil {
+			return nil, errors.Wrap(err, "load version")
+		}
 	}
 
 	maps, err := ec.loadMaps(mapSections)
@@ -147,7 +157,7 @@ func (ec *elfCode) loadPrograms(progSections, relSections map[int]*elf.Section, 
 			// labels they contain later on, and then link sections that way.
 			libs = append(libs, insns)
 		} else {
-			progs[funcSym.Name] = &ProgramSpec{
+			progs[prog.Name] = &ProgramSpec{
 				Name:          funcSym.Name,
 				SectionName:   prog.Name,
 				Type:          progType,

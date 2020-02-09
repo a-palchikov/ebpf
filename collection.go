@@ -101,7 +101,7 @@ func NewCollectionWithOptions(spec *CollectionSpec, opts CollectionOptions) (*Co
 		if err != nil {
 			return nil, errors.Wrapf(err, "program %s", progName)
 		}
-		progs[progName] = prog
+		progs[progSpec.SectionName] = prog
 	}
 
 	return &Collection{
@@ -119,16 +119,60 @@ func LoadCollection(file string) (*Collection, error) {
 	return NewCollection(spec)
 }
 
+// EnableKprobes enables all kprobes/kretprobes included in the collection.
+//
+// For kretprobes, you can configure the maximum number of instances
+// of the function that can be probed simultaneously with maxactive.
+// If maxactive is 0 it will be set to the default value: if CONFIG_PREEMPT is
+// enabled, this is max(10, 2*NR_CPUS); otherwise, it is NR_CPUS.
+// For kprobes, maxactive is ignored.
+func (coll *Collection) EnableKprobes(maxactive int) error {
+	for name, prog := range coll.Programs {
+		if prog.ProgramSpec.Type == Kprobe {
+			if err := coll.EnableKprobe(name, maxactive); err != nil {
+				return errors.Wrap(err, "couldn't enable all kprobes")
+			}
+		}
+	}
+	return nil
+}
+
+// EnableKprobe enables the kprobe selected by its section name.
+//
+// For kretprobes, you can configure the maximum number of instances
+// of the function that can be probed simultaneously with maxactive.
+// If maxactive is 0 it will be set to the default value: if CONFIG_PREEMPT is
+// enabled, this is max(10, 2*NR_CPUS); otherwise, it is NR_CPUS.
+// For kprobes, maxactive is ignored.
+func (coll *Collection) EnableKprobe(secName string, maxactive int) error {
+	// Check if section exists
+	prog, ok := coll.Programs[secName]
+	if !ok {
+		return errors.Wrapf(
+			errors.New("section not found"),
+			"couldn't enable kprobe %s",
+			secName,
+		)
+	}
+	return prog.EnableKprobe(maxactive)
+}
+
 // Close frees all maps and programs associated with the collection.
 //
 // The collection mustn't be used afterwards.
-func (coll *Collection) Close() {
-	for _, prog := range coll.Programs {
-		prog.Close()
+func (coll *Collection) Close() error {
+	var err, errTmp error
+	for secName, prog := range coll.Programs {
+		if errTmp = errors.Wrapf(prog.Close(), "couldn't close program %s", secName); errTmp != nil {
+			err = errors.Wrap(errTmp, err.Error())
+		}
 	}
-	for _, m := range coll.Maps {
-		m.Close()
+	for secName, m := range coll.Maps {
+		if errTmp = errors.Wrapf(m.Close(), "couldn't close map %s", secName); errTmp != nil {
+			err = errors.Wrap(errTmp, err.Error())
+		}
 	}
+	return err
 }
 
 // DetachMap removes the named map from the Collection.

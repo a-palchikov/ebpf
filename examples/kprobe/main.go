@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/Gui774ume/ebpf"
 )
@@ -33,4 +34,16 @@ func main() {
 		fmt.Printf("%.3s", v.Instructions)
 	}
 	fmt.Println("")
+
+	coll, err := ebpf.LoadCollection(ebpfBytecode)
+	if err != nil {
+		panic(err)
+	}
+	if err := coll.EnableKprobes(-1); err != nil {
+		panic(err)
+	}
+	time.Sleep(3 * time.Second)
+	if err := coll.Close(); err != nil {
+		fmt.Println(err)
+	}
 }

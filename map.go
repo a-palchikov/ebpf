@@ -148,6 +148,7 @@ func createMap(spec *MapSpec, inner *bpfFD) (*Map, error) {
 
 func newMap(fd *bpfFD, abi *MapABI) (*Map, error) {
 	m := &Map{
+		nil,
 		fd,
 		*abi,
 		int(abi.ValueSize),

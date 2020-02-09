@@ -197,6 +197,26 @@ func (coll *Collection) EnableTracepoint(secName string) error {
 	)
 }
 
+// AttachCgroupProgram attaches a program to a cgroup
+func (coll *Collection) AttachCgroupProgram(secName string, cgroupPath string) error {
+	prog, ok := coll.Programs[secName]
+	if !ok {
+		return errors.Wrapf(
+			errors.New("section not found"),
+			"couldn't attach program %s",
+			secName,
+		)
+	}
+	if prog.IsCgroupProgram() {
+		return prog.AttachCgroup(cgroupPath)
+	}
+	return errors.Wrapf(
+		errors.New("not a cgroup program"),
+		"couldn't attach program %s",
+		secName,
+	)
+}
+
 // Close frees all maps and programs associated with the collection.
 //
 // The collection mustn't be used afterwards.
@@ -204,12 +224,20 @@ func (coll *Collection) Close() error {
 	var err, errTmp error
 	for secName, prog := range coll.Programs {
 		if errTmp = errors.Wrapf(prog.Close(), "couldn't close program %s", secName); errTmp != nil {
-			err = errors.Wrap(errTmp, err.Error())
+			if err == nil {
+				err = errTmp
+			} else {
+				err = errors.Wrap(errTmp, err.Error())
+			}
 		}
 	}
 	for secName, m := range coll.Maps {
 		if errTmp = errors.Wrapf(m.Close(), "couldn't close map %s", secName); errTmp != nil {
-			err = errors.Wrap(errTmp, err.Error())
+			if err == nil {
+				err = errTmp
+			} else {
+				err = errors.Wrap(errTmp, err.Error())
+			}
 		}
 	}
 	return err

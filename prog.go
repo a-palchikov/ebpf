@@ -80,11 +80,13 @@ type Program struct {
 	// ProgramSpec - Pointer to the ProgramSpec
 	ProgramSpec *ProgramSpec
 
-	fd   *bpfFD
-	efd  *bpfFD
-	efds map[string]*bpfFD
-	name string
-	abi  ProgramABI
+	fd                 *bpfFD
+	efd                *bpfFD
+	efds               map[string]*bpfFD
+	name               string
+	abi                ProgramABI
+	attachedCgroupPath string
+	attachedType       AttachType
 }
 
 // NewProgram creates a new Program.
@@ -227,11 +229,10 @@ func (bpf *Program) EnableKprobe(maxactive int) error {
 	if err != nil {
 		return errors.Wrapf(err, "couldn't enable kprobe %s", bpf.ProgramSpec.SectionName)
 	}
-	efd, err := perfEventOpenTracepoint(kprobeID, bpf.FD())
+	bpf.efd, err = perfEventOpenTracepoint(kprobeID, bpf.FD())
 	if err != nil {
 		return errors.Wrapf(err, "couldn't enable kprobe %s", bpf.ProgramSpec.SectionName)
 	}
-	bpf.efd = newBPFFD(uint32(efd))
 	return nil
 }
 
@@ -258,11 +259,34 @@ func (bpf *Program) EnableTracepoint() error {
 	if err != nil {
 		return errors.Wrapf(err, "couldn's enable tracepoint %s", bpf.ProgramSpec.SectionName)
 	}
-	efd, err := perfEventOpenTracepoint(tracepointID, bpf.FD())
+	bpf.efd, err = perfEventOpenTracepoint(tracepointID, bpf.FD())
 	if err != nil {
 		return errors.Wrapf(err, "couldn't enable tracepoint %s", bpf.ProgramSpec.SectionName)
 	}
-	bpf.efd = newBPFFD(uint32(efd))
+	return nil
+}
+
+// AttachCgroup attaches the program to a cgroup
+func (bpf *Program) AttachCgroup(cgroupPath string) error {
+	if !bpf.IsCgroupProgram() {
+		return errors.Wrapf(
+			errors.New("not a cgroup program"),
+			"couldn't attach program %s",
+			bpf.ProgramSpec.SectionName,
+		)
+	}
+	f, err := os.Open(cgroupPath)
+	if err != nil {
+		return errors.Wrapf(err, "error opening cgroup %s", cgroupPath)
+	}
+	defer f.Close()
+
+	ret, err := bpfProgAttach(bpf.FD(), int(f.Fd()), bpf.ProgramSpec.AttachType)
+	if ret < 0 {
+		return errors.Wrapf(err, "failed to attach prog to cgroup %s", cgroupPath)
+	}
+	bpf.attachedCgroupPath = cgroupPath
+	bpf.attachedType = bpf.ProgramSpec.AttachType
 	return nil
 }
 
@@ -332,6 +356,29 @@ func (bpf *Program) IsUProbe() bool {
 	return strings.HasPrefix(bpf.ProgramSpec.SectionName, "uprobe/")
 }
 
+// IsCgroupProgram returns true if the program is a cgroup program
+func (bpf *Program) IsCgroupProgram() bool {
+	switch bpf.ProgramSpec.Type {
+	case CGroupSKB:
+		fallthrough
+	case CGroupSock:
+		fallthrough
+	case SockOps:
+		fallthrough
+	case CGroupDevice:
+		fallthrough
+	case CGroupSockAddr:
+		fallthrough
+	case CGroupSysctl:
+		fallthrough
+	case CGroupSockopt:
+		return true
+	default:
+		return false
+	}
+	return false
+}
+
 // Close unloads the program from the kernel.
 func (bpf *Program) Close() error {
 	var err, errTmp error
@@ -342,40 +389,95 @@ func (bpf *Program) Close() error {
 		err = errors.Wrap(bpf.efd.close(), "couldn't close efd")
 	}
 	for _, efd := range bpf.efds {
-		if errTmp = errors.Wrap(efd.close(), "couldn't close efd"); errTmp != nil {
-			err = errors.Wrap(errTmp, err.Error())
-		}
-	}
-	if bpf.fd != nil {
-		if errTmp = errors.Wrap(bpf.fd.close(), "couldn't close fd"); errTmp != nil {
-			err = errors.Wrap(errTmp, err.Error())
+		if errTmp = efd.close(); errTmp != nil {
+			if err == nil {
+				err = errTmp
+			} else {
+				err = errors.Wrapf(errTmp, "%v: couldn't close efd", err)
+			}
 		}
 	}
 
 	// Per program type cleanup
 	switch bpf.ProgramSpec.Type {
 	case Kprobe:
-		if bpf.IsKRetProbe() {
-			funcName := strings.TrimPrefix(bpf.ProgramSpec.SectionName, "kretprobe/")
-			if errTmp = errors.Wrap(disableKprobe("r"+funcName), "couldn't disable KRetpProbe"); errTmp != nil {
-				err = errors.Wrap(errTmp, err.Error())
-			}
-		} else if bpf.IsKProbe() {
-			funcName := strings.TrimPrefix(bpf.ProgramSpec.SectionName, "kprobe/")
-			if errTmp = errors.Wrap(disableKprobe("p"+funcName), "couldn't disable KProbe"); errTmp != nil {
-				err = errors.Wrap(errTmp, err.Error())
-			}
-		} else if bpf.IsUProbe() {
-			for eventName := range bpf.efds {
-				if errTmp = errors.Wrap(disableUprobe(eventName), "couldn't disable UProbe"); errTmp != nil {
-					err = errors.Wrap(errTmp, err.Error())
-				}
+		if errTmp = bpf.disableProbe(); errTmp != nil {
+			if err == nil {
+				err = errTmp
+			} else {
+				err = errors.Wrapf(errTmp, "%v: couldn't cleanup %s", err, bpf.ProgramSpec.SectionName)
 			}
 		}
 		break
 	}
 
+	// Detach program
+	if bpf.IsCgroupProgram() {
+		if errTmp = bpf.detachCgroup(); errTmp != nil {
+			if err == nil {
+				err = errTmp
+			} else {
+				err = errors.Wrapf(errTmp, "%v: couldn't detach %s", err, bpf.ProgramSpec.SectionName)
+			}
+		}
+	}
+
+	if bpf.fd != nil {
+		if errTmp = errors.Wrap(bpf.fd.close(), "couldn't close fd"); errTmp != nil {
+			if err == nil {
+				err = errTmp
+			} else {
+				err = errors.Wrap(errTmp, err.Error())
+			}
+		}
+	}
 	return err
+}
+
+// disableProbe disables the program if it is a kprobe, kretprobe or uprobe
+func (bpf *Program) disableProbe() error {
+	if bpf.IsKRetProbe() {
+		funcName := strings.TrimPrefix(bpf.ProgramSpec.SectionName, "kretprobe/")
+		if err := disableKprobe("r" + funcName); err != nil {
+			return errors.Wrap(err, "couldn't disable kretprobe")
+		}
+	} else if bpf.IsKProbe() {
+		funcName := strings.TrimPrefix(bpf.ProgramSpec.SectionName, "kprobe/")
+		if err := disableKprobe("p" + funcName); err != nil {
+			return errors.Wrap(err, "couldn't disable kprobe")
+		}
+	} else if bpf.IsUProbe() {
+		var err, errTmp error
+		for eventName := range bpf.efds {
+			if errTmp = disableUprobe(eventName); errTmp != nil {
+				if err == nil {
+					err = errTmp
+				} else {
+					err = errors.Wrapf(errTmp, "%v: couldn't disable uprobe", err)
+				}
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+// detachCgroup detaches a cgroup program from its cgroup
+func (bpf *Program) detachCgroup() error {
+	if !bpf.IsCgroupProgram() {
+		return nil
+	}
+	f, err := os.Open(bpf.attachedCgroupPath)
+	if err != nil {
+		return errors.Wrapf(err, "error opening cgroup %s", bpf.attachedCgroupPath)
+	}
+	defer f.Close()
+
+	ret, err := bpfProgDetach(bpf.FD(), int(f.Fd()), bpf.attachedType)
+	if ret < 0 {
+		return errors.Wrapf(err, "got %v", ret)
+	}
+	return nil
 }
 
 // Test runs the Program in the kernel with the given input and returns the

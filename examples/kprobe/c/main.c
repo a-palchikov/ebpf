@@ -5,7 +5,7 @@
 SEC("kprobe/security_sk_classify_flow")
 int kprobe__security_sk_classify_flow(void *ctx)
 {
-    char format[] = "{security_sk_classify_flow}\n";
+    char format[] = "kprobe/security_sk_classify_flow!\n";
     bpf_trace_printk(format, sizeof(format));
     return 0;
 };

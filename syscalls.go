@@ -184,6 +184,13 @@ type bpfGetFDByIDAttr struct {
 	next uint32
 }
 
+type bpfProgAttachAttr struct {
+	targetFD    uint32
+	attachBpfFD uint32
+	attachType  uint32
+	attachFlags uint32
+}
+
 func newPtr(ptr unsafe.Pointer) syscallPtr {
 	return syscallPtr{ptr: ptr}
 }
@@ -198,6 +205,11 @@ func bpfProgLoad(attr *bpfProgLoadAttr) (*bpfFD, error) {
 		}
 
 		if err != nil {
+			if attr.expectedAttachType != 0 {
+				// Try without the attach type
+				attr.expectedAttachType = AttachNone
+				continue
+			}
 			return nil, err
 		}
 
@@ -387,6 +399,32 @@ func bpfGetProgramFDByID(id uint32) (*bpfFD, error) {
 	return newBPFFD(uint32(ptr)), nil
 }
 
+func bpfProgAttach(progFd int, targetFd int, attachType AttachType) (int, error) {
+	attr := bpfProgAttachAttr{
+		targetFD:    uint32(targetFd),
+		attachBpfFD: uint32(progFd),
+		attachType:  uint32(attachType),
+	}
+	ptr, err := bpfCall(_ProgAttach, unsafe.Pointer(&attr), unsafe.Sizeof(attr))
+	if err != nil {
+		return -1, errors.Wrapf(err, "can't attach program id %d to target fd %d", progFd, targetFd)
+	}
+	return int(ptr), nil
+}
+
+func bpfProgDetach(progFd int, targetFd int, attachType AttachType) (int, error) {
+	attr := bpfProgAttachAttr{
+		targetFD:    uint32(targetFd),
+		attachBpfFD: uint32(progFd),
+		attachType:  uint32(attachType),
+	}
+	ptr, err := bpfCall(_ProgDetach, unsafe.Pointer(&attr), unsafe.Sizeof(attr))
+	if err != nil {
+		return -1, errors.Wrapf(err, "can't detach program id %d to target fd %d", progFd, targetFd)
+	}
+	return int(ptr), nil
+}
+
 func bpfCall(cmd int, attr unsafe.Pointer, size uintptr) (uintptr, error) {
 	r1, _, errNo := unix.Syscall(unix.SYS_BPF, uintptr(cmd), uintptr(attr), size)
 	runtime.KeepAlive(attr)
@@ -407,7 +445,7 @@ func convertCString(in []byte) string {
 	return string(in[:inLen])
 }
 
-func perfEventOpenTracepoint(id int, progFd int) (int, error) {
+func perfEventOpenTracepoint(id int, progFd int) (*bpfFD, error) {
 	attr := unix.PerfEventAttr{
 		Type:        unix.PERF_TYPE_TRACEPOINT,
 		Sample_type: unix.PERF_SAMPLE_RAW,
@@ -419,15 +457,15 @@ func perfEventOpenTracepoint(id int, progFd int) (int, error) {
 
 	efd, err := unix.PerfEventOpen(&attr, -1, 0, -1, unix.PERF_FLAG_FD_CLOEXEC)
 	if efd < 0 {
-		return -1, errors.Wrap(err, "perf_event_open error")
+		return nil, errors.Wrap(err, "perf_event_open error")
 	}
 
 	if _, _, err := unix.Syscall(unix.SYS_IOCTL, uintptr(efd), unix.PERF_EVENT_IOC_ENABLE, 0); err != 0 {
-		return -1, errors.Wrap(err, "error enabling perf event")
+		return nil, errors.Wrap(err, "error enabling perf event")
 	}
 
 	if _, _, err := unix.Syscall(unix.SYS_IOCTL, uintptr(efd), unix.PERF_EVENT_IOC_SET_BPF, uintptr(progFd)); err != 0 {
-		return -1, errors.Wrap(err, "error attaching bpf program to perf event")
+		return nil, errors.Wrap(err, "error attaching bpf program to perf event")
 	}
-	return int(efd), nil
+	return newBPFFD(uint32(efd)), nil
 }

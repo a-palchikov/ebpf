@@ -3,7 +3,7 @@ package ebpf
 import (
 	"testing"
 
-	"github.com/newtools/ebpf/asm"
+	"github.com/Gui774ume/ebpf/asm"
 )
 
 func TestCollectionSpecNotModified(t *testing.T) {

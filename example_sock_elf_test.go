@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/newtools/ebpf"
+	"github.com/Gui774ume/ebpf"
 )
 
 var program = [...]byte{

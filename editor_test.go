@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/newtools/ebpf/asm"
+	"github.com/Gui774ume/ebpf/asm"
 )
 
 // ExampleEditor_rewriteConstant shows how to change constants in

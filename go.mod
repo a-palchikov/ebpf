@@ -1,4 +1,4 @@
-module github.com/newtools/ebpf
+module github.com/Gui774ume/ebpf
 
 go 1.12
 

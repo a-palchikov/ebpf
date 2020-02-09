@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/newtools/ebpf/asm"
+	"github.com/Gui774ume/ebpf/asm"
 
 	"github.com/pkg/errors"
 )

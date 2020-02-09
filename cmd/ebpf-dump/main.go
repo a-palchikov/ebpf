@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/newtools/ebpf"
+	"github.com/Gui774ume/ebpf"
 )
 
 func main() {

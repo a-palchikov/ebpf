@@ -9,7 +9,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/newtools/ebpf/asm"
+	"github.com/Gui774ume/ebpf/asm"
 	"golang.org/x/sys/unix"
 
 	"github.com/pkg/errors"

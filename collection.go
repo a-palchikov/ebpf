@@ -128,9 +128,9 @@ func LoadCollection(file string) (*Collection, error) {
 // For kprobes, maxactive is ignored.
 func (coll *Collection) EnableKprobes(maxactive int) error {
 	for name, prog := range coll.Programs {
-		if prog.ProgramSpec.Type == Kprobe {
+		if prog.IsKProbe() || prog.IsKRetProbe() {
 			if err := coll.EnableKprobe(name, maxactive); err != nil {
-				return errors.Wrap(err, "couldn't enable all kprobes")
+				return errors.Wrapf(err, "couldn't enable kprobe %s", name)
 			}
 		}
 	}
@@ -154,7 +154,47 @@ func (coll *Collection) EnableKprobe(secName string, maxactive int) error {
 			secName,
 		)
 	}
-	return prog.EnableKprobe(maxactive)
+	if prog.IsKProbe() || prog.IsKRetProbe() {
+		return prog.EnableKprobe(maxactive)
+	}
+	return errors.Wrapf(
+		errors.New("not a kprobe"),
+		"couldn't enable program %s",
+		secName,
+	)
+}
+
+// EnableTracepoints enables all tracepoints included in the collection.
+func (coll *Collection) EnableTracepoints() error {
+	for name, prog := range coll.Programs {
+		if prog.ProgramSpec.Type == TracePoint {
+			if err := coll.EnableTracepoint(name); err != nil {
+				return errors.Wrapf(err, "couldn't enable tracepoint %s", name)
+			}
+		}
+	}
+	return nil
+}
+
+// EnableTracepoint enables the tracepoint selected by its section name.
+func (coll *Collection) EnableTracepoint(secName string) error {
+	// Check if section exists
+	prog, ok := coll.Programs[secName]
+	if !ok {
+		return errors.Wrapf(
+			errors.New("section not found"),
+			"couldn't enable tracepoint %s",
+			secName,
+		)
+	}
+	if prog.ProgramSpec.Type == TracePoint {
+		return prog.EnableTracepoint()
+	}
+	return errors.Wrapf(
+		errors.New("not a tracepoint"),
+		"couldn't enable program %s",
+		secName,
+	)
 }
 
 // Close frees all maps and programs associated with the collection.

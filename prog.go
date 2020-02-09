@@ -3,16 +3,20 @@ package ebpf
 import (
 	"bytes"
 	"fmt"
+	"io/ioutil"
 	"math"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unsafe"
 
-	"github.com/Gui774ume/ebpf/asm"
+	"github.com/pkg/errors"
 	"golang.org/x/sys/unix"
 
-	"github.com/pkg/errors"
+	"github.com/Gui774ume/ebpf/asm"
 )
 
 // Errors returned by the implementation
@@ -46,6 +50,7 @@ type ProgramSpec struct {
 	// Name is passed to the kernel as a debug aid. Must only contain
 	// alpha numeric and '_' characters.
 	Name          string
+	SectionName   string
 	Type          ProgType
 	AttachType    AttachType
 	Instructions  asm.Instructions
@@ -72,8 +77,12 @@ type Program struct {
 	// Contains the output of the kernel verifier if enabled,
 	// otherwise it is empty.
 	VerifierLog string
+	// ProgramSpec - Pointer to the ProgramSpec
+	ProgramSpec *ProgramSpec
 
 	fd   *bpfFD
+	efd  *bpfFD
+	efds map[string]*bpfFD
 	name string
 	abi  ProgramABI
 }
@@ -113,6 +122,7 @@ func NewProgramWithOptions(spec *ProgramSpec, opts ProgramOptions) (*Program, er
 	if err == nil {
 		prog := newProgram(fd, spec.Name, &ProgramABI{spec.Type})
 		prog.VerifierLog = convertCString(logBuf)
+		prog.ProgramSpec = spec
 		return prog, nil
 	}
 
@@ -168,6 +178,7 @@ func convertProgramSpec(spec *ProgramSpec, includeName bool) (*bpfProgLoadAttr, 
 		insCount:           insCount,
 		instructions:       newPtr(unsafe.Pointer(&bytecode[0])),
 		license:            newPtr(unsafe.Pointer(&lic[0])),
+		kernelVersion:      spec.KernelVersion,
 	}
 
 	name, err := newBPFObjName(spec.Name)
@@ -180,6 +191,46 @@ func convertProgramSpec(spec *ProgramSpec, includeName bool) (*bpfProgLoadAttr, 
 	}
 
 	return attr, nil
+}
+
+// EnableKprobe enables the kprobe selected by its section name.
+//
+// For kretprobes, you can configure the maximum number of instances
+// of the function that can be probed simultaneously with maxactive.
+// If maxactive is 0 it will be set to the default value: if CONFIG_PREEMPT is
+// enabled, this is max(10, 2*NR_CPUS); otherwise, it is NR_CPUS.
+// For kprobes, maxactive is ignored.
+func (bpf *Program) EnableKprobe(maxactive int) error {
+	var probeType, funcName string
+	isKretProbe := strings.HasPrefix(bpf.ProgramSpec.SectionName, "kretprobe/")
+	var maxactiveStr string
+	if isKretProbe {
+		probeType = "r"
+		funcName = strings.TrimPrefix(bpf.ProgramSpec.SectionName, "kretprobe/")
+		if maxactive > 0 {
+			maxactiveStr = fmt.Sprintf("%d", maxactive)
+		}
+	} else {
+		probeType = "p"
+		funcName = strings.TrimPrefix(bpf.ProgramSpec.SectionName, "kprobe/")
+	}
+	eventName := probeType + funcName
+
+	kprobeID, err := writeKprobeEvent(probeType, eventName, funcName, maxactiveStr)
+	// fallback without maxactive
+	if err == errKprobeIDNotExist {
+		kprobeID, err = writeKprobeEvent(probeType, eventName, funcName, "")
+	}
+	if err != nil {
+		return errors.Wrapf(err, "couldn't enable kprobe %s", bpf.ProgramSpec.SectionName)
+	}
+
+	efd, err := perfEventOpenTracepoint(kprobeID, bpf.FD())
+	if err != nil {
+		return errors.Wrapf(err, "couldn't enable kprobe %s", bpf.ProgramSpec.SectionName)
+	}
+	bpf.efd = newBPFFD(uint32(efd))
+	return nil
 }
 
 func (bpf *Program) String() string {
@@ -233,13 +284,65 @@ func (bpf *Program) Pin(fileName string) error {
 	return errors.Wrap(bpfPinObject(fileName, bpf.fd), "can't pin program")
 }
 
+// IsKRetProbe returns true if the program is a kretprobe
+func (bpf *Program) IsKRetProbe() bool {
+	return strings.HasPrefix(bpf.ProgramSpec.SectionName, "kretprobe/")
+}
+
+// IsKProbe returns true if the program is a kprobe
+func (bpf *Program) IsKProbe() bool {
+	return strings.HasPrefix(bpf.ProgramSpec.SectionName, "kprobe/")
+}
+
+// IsUProbe returns true if the program is a uprobe
+func (bpf *Program) IsUProbe() bool {
+	return strings.HasPrefix(bpf.ProgramSpec.SectionName, "uprobe/")
+}
+
 // Close unloads the program from the kernel.
 func (bpf *Program) Close() error {
+	var err, errTmp error
 	if bpf == nil {
 		return nil
 	}
+	if bpf.efd != nil {
+		err = errors.Wrap(bpf.efd.close(), "couldn't close efd")
+	}
+	for _, efd := range bpf.efds {
+		if errTmp = errors.Wrap(efd.close(), "couldn't close efd"); errTmp != nil {
+			err = errors.Wrap(errTmp, err.Error())
+		}
+	}
+	if bpf.fd != nil {
+		if errTmp = errors.Wrap(bpf.fd.close(), "couldn't close fd"); errTmp != nil {
+			err = errors.Wrap(errTmp, err.Error())
+		}
+	}
 
-	return bpf.fd.close()
+	// Per program type cleanup
+	switch bpf.ProgramSpec.Type {
+	case Kprobe:
+		if bpf.IsKRetProbe() {
+			funcName := strings.TrimPrefix(bpf.ProgramSpec.SectionName, "kretprobe/")
+			if errTmp = errors.Wrap(disableKprobe("r"+funcName), "couldn't disable KRetpProbe"); errTmp != nil {
+				err = errors.Wrap(errTmp, err.Error())
+			}
+		} else if bpf.IsKProbe() {
+			funcName := strings.TrimPrefix(bpf.ProgramSpec.SectionName, "kprobe/")
+			if errTmp = errors.Wrap(disableKprobe("p"+funcName), "couldn't disable KProbe"); errTmp != nil {
+				err = errors.Wrap(errTmp, err.Error())
+			}
+		} else if bpf.IsUProbe() {
+			for eventName := range bpf.efds {
+				if errTmp = errors.Wrap(disableUprobe(eventName), "couldn't disable UProbe"); errTmp != nil {
+					err = errors.Wrap(errTmp, err.Error())
+				}
+			}
+		}
+		break
+	}
+
+	return err
 }
 
 // Test runs the Program in the kernel with the given input and returns the
@@ -447,4 +550,73 @@ func (le *loadError) Error() string {
 
 func (le *loadError) Cause() error {
 	return le.cause
+}
+
+var errKprobeIDNotExist error = errors.New("kprobe id file doesn't exist")
+
+func writeKprobeEvent(probeType, eventName, funcName, maxactiveStr string) (int, error) {
+	kprobeEventsFileName := "/sys/kernel/debug/tracing/kprobe_events"
+	f, err := os.OpenFile(kprobeEventsFileName, os.O_APPEND|os.O_WRONLY, 0666)
+	if err != nil {
+		return -1, errors.Wrap(err, "cannot open kprobe_events")
+	}
+	defer f.Close()
+
+	cmd := fmt.Sprintf("%s%s:%s %s\n", probeType, maxactiveStr, eventName, funcName)
+	if _, err = f.WriteString(cmd); err != nil {
+		return -1, errors.Wrapf(err, "cannot write %q to kprobe_events", cmd)
+	}
+
+	kprobeIDFile := fmt.Sprintf("/sys/kernel/debug/tracing/events/kprobes/%s/id", eventName)
+	kprobeIDBytes, err := ioutil.ReadFile(kprobeIDFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return -1, errKprobeIDNotExist
+		}
+		return -1, errors.Wrap(err, "cannot read kprobe id")
+	}
+
+	kprobeID, err := strconv.Atoi(strings.TrimSpace(string(kprobeIDBytes)))
+	if err != nil {
+		return -1, errors.Wrap(err, "invalid kprobe id: %v")
+	}
+
+	return kprobeID, nil
+}
+
+func disableKprobe(eventName string) error {
+	kprobeEventsFileName := "/sys/kernel/debug/tracing/kprobe_events"
+	f, err := os.OpenFile(kprobeEventsFileName, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		return errors.Wrap(err, "cannot open kprobe_events")
+	}
+	defer f.Close()
+	cmd := fmt.Sprintf("-:%s\n", eventName)
+	if _, err = f.WriteString(cmd); err != nil {
+		pathErr, ok := err.(*os.PathError)
+		if ok && pathErr.Err == syscall.ENOENT {
+			// This can happen when for example two modules
+			// use the same elf object and both call `Close()`.
+			// The second will encounter the error as the
+			// probe already has been cleared by the first.
+			return nil
+		} else {
+			return errors.Wrapf(err, "cannot write %q to kprobe_events: %v", cmd)
+		}
+	}
+	return nil
+}
+
+func disableUprobe(eventName string) error {
+	uprobeEventsFileName := "/sys/kernel/debug/tracing/uprobe_events"
+	f, err := os.OpenFile(uprobeEventsFileName, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		return errors.Wrapf(err, "cannot open uprobe_events")
+	}
+	defer f.Close()
+	cmd := fmt.Sprintf("-:%s\n", eventName)
+	if _, err = f.WriteString(cmd); err != nil {
+		return errors.Wrapf(err, "cannot write %q to uprobe_events: %v", cmd)
+	}
+	return nil
 }

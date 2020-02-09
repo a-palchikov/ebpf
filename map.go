@@ -46,6 +46,9 @@ func (ms *MapSpec) Copy() *MapSpec {
 //
 // Implement Marshaler on the arguments if you need custom encoding.
 type Map struct {
+	// MapSpec - pointer to the MapSpec
+	MapSpec *MapSpec
+
 	fd  *bpfFD
 	abi MapABI
 	// Per CPU maps return values larger than the size in the spec
@@ -135,11 +138,17 @@ func createMap(spec *MapSpec, inner *bpfFD) (*Map, error) {
 		return nil, errors.Wrap(err, "map create")
 	}
 
-	return newMap(fd, newMapABIFromSpec(&cpy))
+	newMap, err := newMap(fd, newMapABIFromSpec(&cpy))
+	if err != nil {
+		return nil, err
+	}
+	newMap.MapSpec = spec
+	return newMap, nil
 }
 
 func newMap(fd *bpfFD, abi *MapABI) (*Map, error) {
 	m := &Map{
+		nil,
 		fd,
 		*abi,
 		int(abi.ValueSize),
@@ -392,7 +401,12 @@ func (m *Map) Clone() (*Map, error) {
 		return nil, errors.Wrap(err, "can't clone map")
 	}
 
-	return newMap(dup, &m.abi)
+	newMap, err := newMap(dup, &m.abi)
+	if err != nil {
+		return nil, errors.Wrap(err, "can't clone map")
+	}
+	newMap.MapSpec = m.MapSpec
+	return newMap, err
 }
 
 // Pin persists the map past the lifetime of the process that created it.

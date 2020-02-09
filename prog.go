@@ -193,7 +193,7 @@ func convertProgramSpec(spec *ProgramSpec, includeName bool) (*bpfProgLoadAttr, 
 	return attr, nil
 }
 
-// EnableKprobe enables the kprobe selected by its section name.
+// EnableKprobe enables the program if it is a kprobe.
 //
 // For kretprobes, you can configure the maximum number of instances
 // of the function that can be probed simultaneously with maxactive.
@@ -201,21 +201,24 @@ func convertProgramSpec(spec *ProgramSpec, includeName bool) (*bpfProgLoadAttr, 
 // enabled, this is max(10, 2*NR_CPUS); otherwise, it is NR_CPUS.
 // For kprobes, maxactive is ignored.
 func (bpf *Program) EnableKprobe(maxactive int) error {
-	var probeType, funcName string
-	isKretProbe := strings.HasPrefix(bpf.ProgramSpec.SectionName, "kretprobe/")
-	var maxactiveStr string
-	if isKretProbe {
+	var probeType, funcName, maxactiveStr string
+	if bpf.IsKRetProbe() {
 		probeType = "r"
 		funcName = strings.TrimPrefix(bpf.ProgramSpec.SectionName, "kretprobe/")
 		if maxactive > 0 {
 			maxactiveStr = fmt.Sprintf("%d", maxactive)
 		}
-	} else {
+	} else if bpf.IsKProbe() {
 		probeType = "p"
 		funcName = strings.TrimPrefix(bpf.ProgramSpec.SectionName, "kprobe/")
+	} else {
+		return errors.Wrapf(
+			errors.New("not a kprobe"),
+			"couldn't enable program %s",
+			bpf.ProgramSpec.SectionName,
+		)
 	}
 	eventName := probeType + funcName
-
 	kprobeID, err := writeKprobeEvent(probeType, eventName, funcName, maxactiveStr)
 	// fallback without maxactive
 	if err == errKprobeIDNotExist {
@@ -224,10 +227,33 @@ func (bpf *Program) EnableKprobe(maxactive int) error {
 	if err != nil {
 		return errors.Wrapf(err, "couldn't enable kprobe %s", bpf.ProgramSpec.SectionName)
 	}
-
 	efd, err := perfEventOpenTracepoint(kprobeID, bpf.FD())
 	if err != nil {
 		return errors.Wrapf(err, "couldn't enable kprobe %s", bpf.ProgramSpec.SectionName)
+	}
+	bpf.efd = newBPFFD(uint32(efd))
+	return nil
+}
+
+// EnableTracepoint enables the program if it is a tracepoint.
+func (bpf *Program) EnableTracepoint() error {
+	tracepointGroup := strings.SplitN(bpf.ProgramSpec.SectionName, "/", 3)
+	if len(tracepointGroup) != 3 {
+		return errors.Wrapf(
+			errors.New("expected tracepoint/category/name"),
+			"invalid section name %s",
+			bpf.ProgramSpec.SectionName,
+		)
+	}
+	category := tracepointGroup[1]
+	name := tracepointGroup[2]
+	tracepointID, err := writeTracepointEvent(category, name)
+	if err != nil {
+		return errors.Wrapf(err, "couldn's enable tracepoint %s", bpf.ProgramSpec.SectionName)
+	}
+	efd, err := perfEventOpenTracepoint(tracepointID, bpf.FD())
+	if err != nil {
+		return errors.Wrapf(err, "couldn't enable tracepoint %s", bpf.ProgramSpec.SectionName)
 	}
 	bpf.efd = newBPFFD(uint32(efd))
 	return nil
@@ -561,12 +587,10 @@ func writeKprobeEvent(probeType, eventName, funcName, maxactiveStr string) (int,
 		return -1, errors.Wrap(err, "cannot open kprobe_events")
 	}
 	defer f.Close()
-
 	cmd := fmt.Sprintf("%s%s:%s %s\n", probeType, maxactiveStr, eventName, funcName)
 	if _, err = f.WriteString(cmd); err != nil {
 		return -1, errors.Wrapf(err, "cannot write %q to kprobe_events", cmd)
 	}
-
 	kprobeIDFile := fmt.Sprintf("/sys/kernel/debug/tracing/events/kprobes/%s/id", eventName)
 	kprobeIDBytes, err := ioutil.ReadFile(kprobeIDFile)
 	if err != nil {
@@ -575,13 +599,25 @@ func writeKprobeEvent(probeType, eventName, funcName, maxactiveStr string) (int,
 		}
 		return -1, errors.Wrap(err, "cannot read kprobe id")
 	}
-
 	kprobeID, err := strconv.Atoi(strings.TrimSpace(string(kprobeIDBytes)))
 	if err != nil {
 		return -1, errors.Wrap(err, "invalid kprobe id: %v")
 	}
 
 	return kprobeID, nil
+}
+
+func writeTracepointEvent(category, name string) (int, error) {
+	tracepointIDFile := fmt.Sprintf("/sys/kernel/debug/tracing/events/%s/%s/id", category, name)
+	tracepointIDBytes, err := ioutil.ReadFile(tracepointIDFile)
+	if err != nil {
+		return -1, errors.Wrapf(err, "cannot read tracepoint id %q", tracepointIDFile)
+	}
+	tracepointID, err := strconv.Atoi(strings.TrimSpace(string(tracepointIDBytes)))
+	if err != nil {
+		return -1, errors.Wrap(err, "invalid tracepoint id")
+	}
+	return tracepointID, nil
 }
 
 func disableKprobe(eventName string) error {

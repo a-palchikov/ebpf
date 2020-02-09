@@ -2,12 +2,12 @@
 #include "include/bpf.h"
 #include "bpf_helpers.h"
 
-SEC("tracepoint/syscalls/sys_enter_execve")
-int bpf_prog(void *ctx)
+SEC("cgroup/sock/sock")
+int cgroup_sock_func(struct bpf_sock *sk)
 {
-    char a[] = "tracepoint/syscalls/sys_enter_execve!\n";
+    char a[] = "cgroup/sock/sock!\n";
     bpf_trace_printk(a, sizeof(a));
-    return 0;
+    return 1;
 }
 
 char _license[] SEC("license") = "GPL";

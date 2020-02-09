@@ -9,10 +9,10 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Gui774ume/ebpf/asm"
+	"github.com/pkg/errors"
 	"golang.org/x/sys/unix"
 
-	"github.com/pkg/errors"
+	"github.com/Gui774ume/ebpf/asm"
 )
 
 // Errors returned by the implementation
@@ -46,6 +46,7 @@ type ProgramSpec struct {
 	// Name is passed to the kernel as a debug aid. Must only contain
 	// alpha numeric and '_' characters.
 	Name          string
+	SectionName   string
 	Type          ProgType
 	AttachType    AttachType
 	Instructions  asm.Instructions
@@ -72,6 +73,8 @@ type Program struct {
 	// Contains the output of the kernel verifier if enabled,
 	// otherwise it is empty.
 	VerifierLog string
+	// ProgramSpec - Pointer to the ProgramSpec
+	ProgramSpec *ProgramSpec
 
 	fd   *bpfFD
 	name string
@@ -113,6 +116,7 @@ func NewProgramWithOptions(spec *ProgramSpec, opts ProgramOptions) (*Program, er
 	if err == nil {
 		prog := newProgram(fd, spec.Name, &ProgramABI{spec.Type})
 		prog.VerifierLog = convertCString(logBuf)
+		prog.ProgramSpec = spec
 		return prog, nil
 	}
 

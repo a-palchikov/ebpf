@@ -7,9 +7,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/Gui774ume/ebpf/asm"
-
 	"github.com/pkg/errors"
+
+	"github.com/Gui774ume/ebpf/asm"
 )
 
 type elfCode struct {
@@ -149,6 +149,7 @@ func (ec *elfCode) loadPrograms(progSections, relSections map[int]*elf.Section, 
 		} else {
 			progs[funcSym.Name] = &ProgramSpec{
 				Name:          funcSym.Name,
+				SectionName:   prog.Name,
 				Type:          progType,
 				AttachType:    attachType,
 				License:       license,

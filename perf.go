@@ -362,7 +362,7 @@ func NewPerfReader(opts PerfReaderOptions) (out *PerfReader, err error) {
 	}
 	runtime.SetFinalizer(out, (*PerfReader).Close)
 
-	go out.poll(epollFd, rings, samples, errs)
+	go out.poll(epollFd, rings, samples, errs, lostRecords)
 
 	return out, nil
 }
@@ -417,7 +417,7 @@ func (pr *PerfReader) close(flush bool) error {
 	return nil
 }
 
-func (pr *PerfReader) poll(epollFd int, rings map[int]*perfEventRing, samples chan<- *PerfSample, errs chan<- error) {
+func (pr *PerfReader) poll(epollFd int, rings map[int]*perfEventRing, samples chan<- *PerfSample, errs chan<- error, lostRecords chan uint64) {
 	// last as it means we're done
 	defer close(pr.closed)
 	defer close(samples)
@@ -454,7 +454,7 @@ func (pr *PerfReader) poll(epollFd int, rings map[int]*perfEventRing, samples ch
 
 			if fd == pr.flushCloseFd {
 				for _, ring := range rings {
-					err := pr.flushRing(ring, samples)
+					err := pr.flushRing(ring, samples, lostRecords)
 					if err != nil {
 						errs <- err
 						return
@@ -464,7 +464,7 @@ func (pr *PerfReader) poll(epollFd int, rings map[int]*perfEventRing, samples ch
 				return
 			}
 
-			err := pr.flushRing(rings[fd], samples)
+			err := pr.flushRing(rings[fd], samples, lostRecords)
 			if err != nil {
 				errs <- err
 				return
@@ -473,7 +473,7 @@ func (pr *PerfReader) poll(epollFd int, rings map[int]*perfEventRing, samples ch
 	}
 }
 
-func (pr *PerfReader) flushRing(ring *perfEventRing, samples chan<- *PerfSample) error {
+func (pr *PerfReader) flushRing(ring *perfEventRing, samples chan<- *PerfSample, lostRecords chan uint64) error {
 	rd := newRingReader(ring.meta, ring.ring)
 	defer rd.Close()
 
@@ -488,7 +488,7 @@ func (pr *PerfReader) flushRing(ring *perfEventRing, samples chan<- *PerfSample)
 		if lost > 0 {
 			totalLost += lost
 			select {
-			case pr.LostRecords <- lost:
+			case lostRecords <- lost:
 			case <-pr.stopWriter:
 				break
 			}

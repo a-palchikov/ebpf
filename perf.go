@@ -248,6 +248,9 @@ type PerfReader struct {
 
 	// Samples is closed when the Reader exits.
 	Samples <-chan *PerfSample
+
+	// LostRecords is closed when the Reader exists.
+	LostRecords <-chan uint64
 }
 
 // PerfReaderOptions control the behaviour of the user
@@ -262,6 +265,9 @@ type PerfReaderOptions struct {
 	// The reader will start processing samples once the per CPU buffer
 	// exceeds this value. Must be smaller than PerCPUBuffer.
 	Watermark int
+	// Size of the channel used to retrieve the events from the kernel.
+	// The default and minimum size is the number of CPUs.
+	UserSpaceChanSize int
 }
 
 // NewPerfReader creates a new reader with the given options.
@@ -337,7 +343,11 @@ func NewPerfReader(opts PerfReaderOptions) (out *PerfReader, err error) {
 		return nil, err
 	}
 
-	samples := make(chan *PerfSample, nCPU)
+	if opts.UserSpaceChanSize < nCPU {
+		opts.UserSpaceChanSize = nCPU
+	}
+	samples := make(chan *PerfSample, opts.UserSpaceChanSize)
+	lostRecords := make(chan uint64)
 	errs := make(chan error, 1)
 
 	out = &PerfReader{
@@ -348,6 +358,7 @@ func NewPerfReader(opts PerfReaderOptions) (out *PerfReader, err error) {
 		closed:       make(chan struct{}),
 		Error:        errs,
 		Samples:      samples,
+		LostRecords:  lostRecords,
 	}
 	runtime.SetFinalizer(out, (*PerfReader).Close)
 
@@ -476,6 +487,11 @@ func (pr *PerfReader) flushRing(ring *perfEventRing, samples chan<- *PerfSample)
 
 		if lost > 0 {
 			totalLost += lost
+			select {
+			case pr.LostRecords <- lost:
+			case <-pr.stopWriter:
+				break
+			}
 			continue
 		}
 

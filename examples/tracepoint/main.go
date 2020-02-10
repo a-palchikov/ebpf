@@ -43,7 +43,7 @@ func main() {
 		panic(err)
 	}
 	time.Sleep(3 * time.Second)
-	if err := coll.Close(); err != nil {
+	if errs := coll.Close(); len(errs) > 0 {
 		fmt.Println(err)
 	}
 }

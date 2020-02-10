@@ -464,7 +464,7 @@ func (bpf *Program) disableProbe() error {
 
 // detachCgroup detaches a cgroup program from its cgroup
 func (bpf *Program) detachCgroup() error {
-	if !bpf.IsCgroupProgram() {
+	if !bpf.IsCgroupProgram() || bpf.attachedCgroupPath == "" || bpf.attachedType == AttachNone {
 		return nil
 	}
 	f, err := os.Open(bpf.attachedCgroupPath)

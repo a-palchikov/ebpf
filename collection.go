@@ -220,27 +220,19 @@ func (coll *Collection) AttachCgroupProgram(secName string, cgroupPath string) e
 // Close frees all maps and programs associated with the collection.
 //
 // The collection mustn't be used afterwards.
-func (coll *Collection) Close() error {
-	var err, errTmp error
+func (coll *Collection) Close() []error {
+	errs := []error{}
 	for secName, prog := range coll.Programs {
-		if errTmp = errors.Wrapf(prog.Close(), "couldn't close program %s", secName); errTmp != nil {
-			if err == nil {
-				err = errTmp
-			} else {
-				err = errors.Wrap(errTmp, err.Error())
-			}
+		if errTmp := prog.Close(); errTmp != nil {
+			errs = append(errs, errors.Wrapf(errTmp, "couldn't close program %s", secName))
 		}
 	}
 	for secName, m := range coll.Maps {
-		if errTmp = errors.Wrapf(m.Close(), "couldn't close map %s", secName); errTmp != nil {
-			if err == nil {
-				err = errTmp
-			} else {
-				err = errors.Wrap(errTmp, err.Error())
-			}
+		if errTmp := m.Close(); errTmp != nil {
+			errs = append(errs, errors.Wrapf(errTmp, "couldn't close map %s", secName))
 		}
 	}
-	return err
+	return errs
 }
 
 // DetachMap removes the named map from the Collection.

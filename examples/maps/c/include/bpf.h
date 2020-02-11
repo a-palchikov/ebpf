@@ -75,7 +75,7 @@ struct bpf_insn
 struct bpf_lpm_trie_key
 {
 	__u32 prefixlen; /* up to 32 for AF_INET, 128 for AF_INET6 */
-	__u8 data[0];	/* Arbitrary size */
+	__u8 data[20];   /* Arbitrary size */
 };
 
 /* BPF syscall commands, see bpf(2) man-page for details. */

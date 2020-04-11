@@ -20,18 +20,24 @@ struct bpf_map_def SEC("maps") routing_map = {
     .map_flags = BPF_F_NO_PREALLOC,
 };
 
+struct lpm_trie_key
+{
+    u32 prefixlen;
+    u8 data[20];
+};
+
 SEC("kprobe/security_sk_classify_flow")
 int kprobe__security_sk_classify_flow(void *ctx)
 {
-    uint64_t value_1 = 1;
-    struct bpf_lpm_trie_key route_1 = {.data = {192, 168, 0, 0}, .prefixlen = 16};
-    uint64_t value_3 = 3;
-    struct bpf_lpm_trie_key route_3 = {.data = {192, 168, 1, 0}, .prefixlen = 24};
+    // uint64_t value_1 = 1;
+    // struct bpf_lpm_trie_key route_1 = {.data = {192, 168, 0, 0}, .prefixlen = 16};
+    // uint64_t value_3 = 3;
+    // struct bpf_lpm_trie_key route_3 = {.data = {192, 168, 1, 0}, .prefixlen = 24};
 
-    struct bpf_lpm_trie_key key4 = {.data = {192, 168, 0, 13}, .prefixlen = 32};
+    struct lpm_trie_key key4 = {.data = {192, 168, 0, 13}, .prefixlen = 32};
 
-    bpf_map_update_elem(&routing_map, &route_1, &value_1, BPF_ANY);
-    bpf_map_update_elem(&routing_map, &route_3, &value_3, BPF_ANY);
+    // bpf_map_update_elem(&routing_map, &route_1, &value_1, BPF_ANY);
+    // bpf_map_update_elem(&routing_map, &route_3, &value_3, BPF_ANY);
 
     u64 *prefix_value = bpf_map_lookup_elem(&routing_map, &key4);
     if (prefix_value != NULL)

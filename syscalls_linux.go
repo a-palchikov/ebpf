@@ -407,15 +407,23 @@ func bpfProgDetach(progFd int, targetFd int, attachType AttachType) (int, error)
 }
 
 func bpfCall(cmd int, attr unsafe.Pointer, size uintptr) (uintptr, error) {
-	r1, _, errNo := unix.Syscall(unix.SYS_BPF, uintptr(cmd), uintptr(attr), size)
-	runtime.KeepAlive(attr)
+	for {
+		r1, _, errNo := unix.Syscall(unix.SYS_BPF, uintptr(cmd), uintptr(attr), size)
+		runtime.KeepAlive(attr)
 
-	var err error
-	if errNo != 0 {
-		err = errNo
+		// As of ~4.20 the verifier can be interrupted by a signal,
+		// and returns EAGAIN in that case.
+		if errNo == unix.EAGAIN && cmd == _ProgLoad {
+			continue
+		}
+
+		var err error
+		if errNo != 0 {
+			err = errNo
+		}
+
+		return r1, err
 	}
-
-	return r1, err
 }
 
 func convertCString(in []byte) string {
